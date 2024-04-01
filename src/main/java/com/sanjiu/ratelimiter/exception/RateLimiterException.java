@@ -21,8 +21,4 @@ public class RateLimiterException extends RuntimeException {
      * */
     private String msg;
 
-    public static void cast(String msg) {
-        throw new RateLimiterException(msg);
-    }
-
 }

@@ -1,6 +1,7 @@
 package com.sanjiu.ratelimiter;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.sanjiu.ratelimiter.annotation.OverallRateLimiter;
 import com.sanjiu.ratelimiter.annotation.RateLimiter;
 import com.sanjiu.ratelimiter.exception.RateLimiterException;
 import jakarta.annotation.Resource;
@@ -9,6 +10,10 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.redisson.api.RRateLimiter;
+import org.redisson.api.RateIntervalUnit;
+import org.redisson.api.RateType;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
@@ -26,15 +31,15 @@ import java.util.concurrent.TimeUnit;
 public class RateLimiterPoint {
 
     @Resource
-    private RedisTemplate<String, Object> redisTemplate;
+    private RedissonClient redissonClient;
 
 
     @Pointcut("@annotation(com.sanjiu.ratelimiter.annotation.RateLimiter)")
     public void rateLimiterPt() {
     }
 
-    @Pointcut("@annotation(com.sanjiu.ratelimiter.annotation.OverAllRateLimiter)")
-    public void overAllRateLimiterPt() {
+    @Pointcut("@annotation(com.sanjiu.ratelimiter.annotation.OverallRateLimiter)")
+    public void overallRateLimiterPt() {
     }
 
     @Around("rateLimiterPt()")
@@ -50,37 +55,43 @@ public class RateLimiterPoint {
         String clazzName = joinPoint.getTarget().getClass().getName();
         String methodName = methodSignature.getMethod().getName();
         String key = "rateLimiter:" + clazzName + ":" + methodName + ":" + userId;
-        // 循环尝试获取锁
-        while (true) {
-            // 尝试获取锁
-            Boolean isLock = redisTemplate.opsForValue().setIfAbsent(key + "lock", Thread.currentThread().getId(), second, TimeUnit.SECONDS);
-            if (isLock) {
-                try {
-                    Long count;
-                    if (redisTemplate.opsForValue().get(key) == null) {
-                        // 计数器不存在，设置初始值并设置过期时间
-                        count = 1L;
-                        redisTemplate.opsForValue().set(key, count, second, TimeUnit.SECONDS);
-                    } else {
-                        // 计数器已存在，递增并设置过期时间
-                        count = redisTemplate.opsForValue().increment(key);
-                    }
 
-                    // 检查计数器是否超过限制
-                    if (count > permits) {
-                        // 超过限制，拒绝请求
-                        throw new RateLimiterException(message);
-                    }
+        RRateLimiter rRateLimiter = redissonClient.getRateLimiter(key);
+        boolean isSet = rRateLimiter.trySetRate(RateType.OVERALL, permits, second, RateIntervalUnit.SECONDS);
+        // 设置限流器在一定时间内过期，比如30分钟
+        if (isSet) {
+            rRateLimiter.expire(30, TimeUnit.MINUTES);
+        }
+        if (rRateLimiter.tryAcquire()) {
+            return joinPoint.proceed();
+        } else {
+            throw new RateLimiterException(message);
+        }
+    }
 
-                    // 允许请求
-                    return joinPoint.proceed();
-                } finally {
-                    redisTemplate.delete(key + "lock");
-                }
-            } else {
-                // 等待一段时间后继续尝试获取锁
-                Thread.sleep(100); // 等待10毫秒后重试
-            }
+    @Around("overallRateLimiterPt()")
+    public Object overallRateLimiter(ProceedingJoinPoint joinPoint) throws Throwable {
+        // 获取方法签名
+        MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
+        // 获取方法上的@RateLimiter注解实例
+        OverallRateLimiter rateLimiter = methodSignature.getMethod().getAnnotation(OverallRateLimiter.class);
+        int permits = rateLimiter.permits();
+        long second = rateLimiter.second();
+        String message = rateLimiter.message();
+        String clazzName = joinPoint.getTarget().getClass().getName();
+        String methodName = methodSignature.getMethod().getName();
+        String key = "overallRateLimiter:" + clazzName + ":" + methodName;
+
+        RRateLimiter rRateLimiter = redissonClient.getRateLimiter(key);
+        boolean isSet = rRateLimiter.trySetRate(RateType.OVERALL, permits, second, RateIntervalUnit.SECONDS);
+        // 设置限流器在一定时间内过期，比如30分钟
+        if (isSet) {
+            rRateLimiter.expire(30, TimeUnit.MINUTES);
+        }
+        if (rRateLimiter.tryAcquire()) {
+            return joinPoint.proceed();
+        } else {
+            throw new RateLimiterException(message);
         }
     }
 

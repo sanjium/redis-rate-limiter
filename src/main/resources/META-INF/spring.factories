@@ -1,0 +1,3 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+  com.sanjiu.ratelimiter.RedissonAutoConfiguration,\
+  com.sanjiu.ratelimiter.RateLimiterPoint
